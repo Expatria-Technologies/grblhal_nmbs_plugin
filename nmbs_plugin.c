@@ -60,7 +60,8 @@ static uint8_t dir_port = IOPORT_UNASSIGNED;
 #define COILS_ADDR_MAX 100
 #define REGS_ADDR_MAX 32
 
-#define MACRO_TRIGGER_REGISTER 10   // choose any free holding register
+#define MACRO_TRIGGER_REGISTER 1   // choose any free holding register
+
 
 static volatile bool macro_pending = false;
 static volatile uint16_t macro_number = 0;
@@ -86,6 +87,7 @@ void onError() {
     }
 }
 
+
 nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield coils_out, uint8_t unit_id, void* arg) {
     if (address + quantity > COILS_ADDR_MAX + 1)
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
@@ -99,6 +101,16 @@ nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield 
     return NMBS_ERROR_NONE;
 }
 
+nmbs_error handle_write_single_coil(uint16_t address, bool value, uint8_t unit_id,
+                                       void* arg) {
+    if (address > COILS_ADDR_MAX)
+        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+
+     // Write the single coil value
+        nmbs_bitfield_write(server_coils, address, value);
+
+    return NMBS_ERROR_NONE;
+}
 
 nmbs_error handle_write_multiple_coils(uint16_t address, uint16_t quantity, const nmbs_bitfield coils, uint8_t unit_id,
                                        void* arg) {
@@ -114,7 +126,7 @@ nmbs_error handle_write_multiple_coils(uint16_t address, uint16_t quantity, cons
 }
 
 
-nmbs_error handler_read_holding_registers(uint16_t address, uint16_t quantity, uint16_t* registers_out, uint8_t unit_id,
+nmbs_error handle_read_holding_registers(uint16_t address, uint16_t quantity, uint16_t* registers_out, uint8_t unit_id,
                                           void* arg) {
     if (address + quantity > REGS_ADDR_MAX + 1)
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
@@ -122,6 +134,24 @@ nmbs_error handler_read_holding_registers(uint16_t address, uint16_t quantity, u
     // Read our registers values into registers_out
     for (int i = 0; i < quantity; i++)
         registers_out[i] = server_registers[address + i];
+
+    return NMBS_ERROR_NONE;
+}
+
+nmbs_error handle_write_single_register(uint16_t address, uint16_t value,
+                                           uint8_t unit_id, void* arg) {
+    // Validate address range
+    if (address > REGS_ADDR_MAX)
+        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+
+    // Write the register
+    server_registers[address] = value;
+
+    // Check for macro trigger register
+    if (address == MACRO_TRIGGER_REGISTER) {
+        macro_number = value;
+        macro_pending = true;
+    }
 
     return NMBS_ERROR_NONE;
 }
@@ -179,9 +209,10 @@ int32_t read_serial(uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void*
 
 int32_t write_serial(const uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void* arg) {
     ioport_digital_out(dir_port, 1);
+    hal.delay_ms(1,NULL);
     nanomodbus_stream.write_n(buf, count);
     while(nanomodbus_stream.get_tx_buffer_count());
-    hal.delay_ms(1,NULL);
+    //hal.delay_ms(10,NULL);
     ioport_digital_out(dir_port, 0);
 
     return count;
@@ -238,9 +269,12 @@ void my_plugin_init (void)
 
     nmbs_callbacks_create(&callbacks);
     callbacks.read_coils = handle_read_coils;
+    callbacks.write_single_coil = handle_write_single_coil;
     callbacks.write_multiple_coils = handle_write_multiple_coils;
-    callbacks.read_holding_registers = handler_read_holding_registers;
+    callbacks.read_holding_registers = handle_read_holding_registers;
+    callbacks.write_single_register = handle_write_single_register;
     callbacks.write_multiple_registers = handle_write_multiple_registers;
+  
 
     nmbs_server_create(&nmbs, RTU_SERVER_ADDRESS, &platform_conf, &callbacks);
 
