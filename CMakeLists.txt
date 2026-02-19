@@ -1,6 +1,6 @@
-add_library(nanomodbus INTERFACE)
+add_library(nmbs INTERFACE)
 
-target_sources(nanomodbus INTERFACE
+target_sources(nmbs INTERFACE
  ${CMAKE_CURRENT_LIST_DIR}/nanomodbus.c
   ${CMAKE_CURRENT_LIST_DIR}/plugin_nmbs.c
 )
