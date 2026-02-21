@@ -35,6 +35,10 @@
 
 #include "nmbs_plugin.h"
 
+PROGMEM static const setting_group_detail_t modbus_groups [] = {
+    { Group_Root, Group_ModBus, "ModBus"}
+};
+
 typedef struct {
     uint8_t modbus_address;
     int modbus_baud_rate; //added by empyrean 2025-11-24
@@ -101,6 +105,7 @@ static void update_rgb_output(void *data){
 
     bool success = false;
 #ifdef NEOPIXELS_PIN
+/*
     rgb_ptr_t *strip = &hal.rgb0;
 
     bool r = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_RED);
@@ -119,7 +124,7 @@ static void update_rgb_output(void *data){
 
     if(strip->num_devices > 1 && strip->write)
         strip->write();
-
+*/
 #endif
     return;
 }
@@ -141,8 +146,8 @@ static volatile bool rgb_pending = false;
 static volatile uint16_t macro_number = 0;
 
 static const setting_detail_t nmbs_settings[] = {
-     { Setting_UserDefined_0, Group_UserSettings, "NanoModbus Device Address", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
-     { Setting_UserDefined_1, Group_UserSettings, "NanoModbus Baud Rate", "", Format_Integer, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
+     { Setting_UserDefined_0, Group_ModBus, "NanoModbus Device Address", "", Format_Int8, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
+     { Setting_UserDefined_1, Group_ModBus, "ModBus baud rate", NULL, Format_RadioButtons, "2400,4800,9600,19200,38400,115200", NULL, NULL, Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
 };
 
 static const setting_descr_t nmbs_settings_descr[] = {
@@ -150,26 +155,8 @@ static const setting_descr_t nmbs_settings_descr[] = {
     { Setting_UserDefined_1, "NanoModbus Baud Rate. Hard reset required." },
 };
 
-static void nmbs_settings_save (void)
-{
-    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
-}
-
-static void nmbs_settings_restore (void)
-{
-    nmbs_config.modbus_address = 1;
-    nmbs_config.modbus_baud_rate = 115200;
-    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
-}
-
-static void nmbs_settings_load (void)
-{
-    if((hal.nvs.memcpy_from_nvs((uint8_t *)&nmbs_config, nvs_address, sizeof(nmbs_settings_t), true) != NVS_TransferResult_OK))
-        nmbs_settings_restore();
-}
-
 void onError() {
-    report_message("Nanomodbus Error", Message_Error);
+    //report_message("Nanomodbus Error", Message_Error);
 
     //raise alarm state?
 
@@ -392,7 +379,7 @@ nmbs_error handle_write_single_register(uint16_t address, uint16_t value, uint8_
 
 size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
 {
-    if (!nanomodbus_stream.read || !buf || count == 0)
+    if (!stream || !nanomodbus_stream.read || !buf || count == 0)
         return 0;
 
     size_t read_count = 0;
@@ -402,16 +389,15 @@ size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
 
         int16_t c = nanomodbus_stream.read();
 
-        if (c >= 0) {
-            buf[read_count++] = (uint8_t)c;
-            start = hal.get_elapsed_ticks();   // reset timeout after valid byte
-        }
-        else {
-            // wait until timeout expires
-            if (timeout_ms &&
-                (hal.get_elapsed_ticks() - start) >= timeout_ms)
-                break;
-        }
+        // Stop immediately if no byte is available
+        if (c < 0)
+            break;
+
+        buf[read_count++] = (uint8_t)c;
+
+        // Optional timeout guard (usually not needed for non-blocking mode)
+        if (timeout_ms && (hal.get_elapsed_ticks() - start) >= timeout_ms)
+            break;
     }
 
     return read_count;
@@ -438,8 +424,9 @@ static void onReportOptions (bool newopt)
 {
     on_report_options(newopt);
 
-    if(!newopt)
+    if(!newopt){
     	report_plugin("NanoModbus", "0.01");
+    }
 
 }
 
@@ -487,8 +474,25 @@ static void onExecuteDelay (uint_fast16_t state)
     on_execute_delay(state);
 }
 
-void my_plugin_init (void)
+static void nmbs_settings_save (void)
 {
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
+}
+
+static void nmbs_settings_restore (void)
+{
+    nmbs_config.modbus_address = 1;
+    nmbs_config.modbus_baud_rate = 5;
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
+}
+
+static void nmbs_settings_load (void)
+{
+    if((hal.nvs.memcpy_from_nvs((uint8_t *)&nmbs_config, nvs_address, sizeof(nmbs_settings_t), true) != NVS_TransferResult_OK))
+        nmbs_settings_restore();
+
+    //nmbs_settings_load();
+
     nmbs_platform_conf_create(&platform_conf);
     platform_conf.transport = NMBS_TRANSPORT_RTU;
     platform_conf.read = read_serial;
@@ -502,15 +506,17 @@ void my_plugin_init (void)
     callbacks.read_holding_registers = handle_read_holding_registers;
     callbacks.write_single_register = handle_write_single_register;
     callbacks.write_multiple_registers = handle_write_multiple_registers;
-  
 
+    uint32_t actual_baud = baud[nmbs_config.modbus_baud_rate];
+  
     nmbs_server_create(&nmbs, nmbs_config.modbus_address, &platform_conf, &callbacks);
 
     nmbs_set_read_timeout(&nmbs, 1000);
     nmbs_set_byte_timeout(&nmbs, 100);
   
     bool ok;
-    stream = stream_open_instance(NANOMODBUS_STREAM, nmbs_config.modbus_baud_rate, NULL, "NanoMODBUS UART");
+
+    stream = stream_open_instance(NANOMODBUS_STREAM, actual_baud, NULL, "nanoModbus");
 
     if(stream)
         report_message("NanoModbus stream opened", Message_Plain);
@@ -520,11 +526,14 @@ void my_plugin_init (void)
     if((ok = stream != NULL)) {
         memcpy(&nanomodbus_stream, stream, sizeof(io_stream_t));
 
-        stream = stream_null_init(nmbs_config.modbus_baud_rate);
+        stream = stream_null_init(actual_baud);
 
         nanomodbus_stream.set_enqueue_rt_handler(stream_buffer_all);
-    }
+    }        
+}
 
+void my_plugin_init (void)
+{
     xbar_t *dir_pin; // TODO: move to top and use for direct access
     io_port_cfg_t d_out;
 
@@ -540,6 +549,8 @@ void my_plugin_init (void)
     }
 
     static setting_details_t nmbs_setting_details = {
+        .groups = modbus_groups,
+        .n_groups = sizeof(modbus_groups) / sizeof(setting_group_detail_t),        
         .settings = nmbs_settings,
         .n_settings = sizeof(nmbs_settings) / sizeof(setting_detail_t),
     #ifndef NO_SETTINGS_DESCRIPTIONS
@@ -551,8 +562,8 @@ void my_plugin_init (void)
         .save = nmbs_settings_save
     };
 
-        if((nvs_address = nvs_alloc(sizeof(nmbs_settings_t)))) 
-            settings_register(&nmbs_setting_details);  
+    if((nvs_address = nvs_alloc(sizeof(nmbs_settings_t)))) 
+        settings_register(&nmbs_setting_details);       
 
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
@@ -561,7 +572,8 @@ void my_plugin_init (void)
     grbl.on_execute_realtime = onExecuteRealtime;
 
     on_execute_delay = grbl.on_execute_delay;
-    grbl.on_execute_delay = onExecuteDelay;    
+    grbl.on_execute_delay = onExecuteDelay;
+
 }
 
 
