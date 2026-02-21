@@ -67,12 +67,15 @@ static uint8_t dir_port = IOPORT_UNASSIGNED;
 #define COILS_ADDR_MAX 100
 #define REGS_ADDR_MAX 32
 
+//system coils start at 0
 #define ALARM_STATE_COIL 0
 #define IDLE_STATE_COIL 1
 
 //inputs start at coil 10
 
 //outputs start at coil 20
+
+//RGB coils start at coil 30
 
 
 #define MACRO_TRIGGER_REGISTER 1   // choose any free holding register
@@ -83,14 +86,14 @@ static uint8_t dir_port = IOPORT_UNASSIGNED;
 static volatile bool macro_pending = false;
 static volatile uint16_t macro_number = 0;
 
-static const setting_detail_t mbrgb_settings[] = {
-     { Setting_Action1, Group_ModBus, "NanoModbus Device Address", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
-     { Setting_Action2, Group_ModBus, "NanoModbus Baud Rate", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
+static const setting_detail_t nmbs_settings[] = {
+     { Setting_UserDefined_0, Group_UserSettings, "NanoModbus Device Address", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
+     { Setting_UserDefined_1, Group_UserSettings, "NanoModbus Baud Rate", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
 };
 
-static const setting_descr_t mbrgb_settings_descr[] = {
-    { Setting_Action1, "NanoModbus Device Address" },
-    { Setting_Action2, "NanoModbus Baud Rate" },
+static const setting_descr_t nmbs_settings_descr[] = {
+    { Setting_UserDefined_0, "NanoModbus Device Address" },
+    { Setting_UserDefined_1, "NanoModbus Baud Rate" },
 };
 
 static void nmbs_settings_save (void)
@@ -217,7 +220,7 @@ for (int i = 0; i < quantity; i++) {
     return NMBS_ERROR_NONE;
 }
 
-size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
+/* size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
 {
     if (!stream || !nanomodbus_stream.read || !buf || count == 0)
         return 0;
@@ -238,6 +241,33 @@ size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
         // Optional timeout guard (usually not needed for non-blocking mode)
         if (timeout_ms && (hal.get_elapsed_ticks() - start) >= timeout_ms)
             break;
+    }
+
+    return read_count;
+} */
+
+size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
+{
+    if (!nanomodbus_stream.read || !buf || count == 0)
+        return 0;
+
+    size_t read_count = 0;
+    uint32_t start = hal.get_elapsed_ticks();
+
+    while (read_count < count) {
+
+        int16_t c = nanomodbus_stream.read();
+
+        if (c >= 0) {
+            buf[read_count++] = (uint8_t)c;
+            start = hal.get_elapsed_ticks();   // reset timeout after valid byte
+        }
+        else {
+            // wait until timeout expires
+            if (timeout_ms &&
+                (hal.get_elapsed_ticks() - start) >= timeout_ms)
+                break;
+        }
     }
 
     return read_count;
@@ -354,21 +384,19 @@ void my_plugin_init (void)
     }
 
     static setting_details_t nmbs_setting_details = {
-        .settings = mbrgb_settings,
-        .n_settings = sizeof(mbrgb_settings) / sizeof(setting_detail_t),
+        .settings = nmbs_settings,
+        .n_settings = sizeof(nmbs_settings) / sizeof(setting_detail_t),
     #ifndef NO_SETTINGS_DESCRIPTIONS
-        .descriptions = mbrgb_settings_descr,
-        .n_descriptions = sizeof(mbrgb_settings_descr) / sizeof(setting_descr_t),
+        .descriptions = nmbs_settings_descr,
+        .n_descriptions = sizeof(nmbs_settings_descr) / sizeof(setting_descr_t),
     #endif
         .load = nmbs_settings_load,
         .restore = nmbs_settings_restore,
         .save = nmbs_settings_save
     };
 
-        if(modbus_enabled() && (nvs_address = nvs_alloc(sizeof(nmbs_settings_t)))) 
-    {
-        settings_register(&nmbs_setting_details);
-    };    
+        if((nvs_address = nvs_alloc(sizeof(nmbs_settings_t)))) 
+            settings_register(&nmbs_setting_details);  
 
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
