@@ -1,6 +1,6 @@
-nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 10 and executes a macro stored in the filesystem with that number, ie 
+nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 1 and executes a macro stored in the filesystem with that number, ie 
 
-G65 P7 S1 F16 R10 A42
+G65 P7 S1 F16 R1 A42
 
 Will execute the file "42.gcode" that is stored in the filesystem.
 
