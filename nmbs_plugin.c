@@ -26,17 +26,29 @@
 #include <string.h>
 
 //#include "serial.h"
+#include "grbl/state_machine.h"
 #include "grbl/modbus.h"
 #include "grbl/settings.h"
 #include "grbl/protocol.h"
 #include "sdcard/fs_stream.h"
 #include "grbl/nvs_buffer.h"
 
+#include "nmbs_plugin.h"
+
 typedef struct {
     uint8_t modbus_address;
-    uint16_t modbus_baud_rate; //added by empyrean 2025-11-24
+    int modbus_baud_rate; //added by empyrean 2025-11-24
     //uint16_t rx_timeout;
 } nmbs_settings_t;
+
+// A single nmbs_bitfield variable can keep 2000 coils
+nmbs_bitfield server_coils = {0};
+uint16_t server_registers[REGS_ADDR_MAX + 1] = {0};
+
+nmbs_platform_conf platform_conf;
+nmbs_callbacks callbacks;
+
+nmbs_t nmbs;
 
 nmbs_settings_t nmbs_config;
 static nvs_address_t nvs_address;
@@ -60,40 +72,82 @@ static const io_stream_t *stream = NULL;
 static io_stream_t nanomodbus_stream;
 static uint8_t dir_port = IOPORT_UNASSIGNED;
 
-// The data model of this sever will support coils addresses 0 to 100 and registers addresses from 0 to 32
-// Our RTU address
-#define RTU_SERVER_ADDRESS 1
+static void execute_system_reset (void){
+    grbl.enqueue_realtime_command(CMD_RESET);
+    nmbs_bitfield_write(server_coils, COIL_SYSTEM_RESET, 0);
+}
 
-#define COILS_ADDR_MAX 100
-#define REGS_ADDR_MAX 32
+static void execute_system_unlock (void){
+    grbl.enqueue_realtime_command(CMD_STOP);
+    nmbs_bitfield_write(server_coils, COIL_SYSTEM_UNLOCK, 0);
+}
 
-//system coils start at 0
-#define ALARM_STATE_COIL 0
-#define IDLE_STATE_COIL 1
+static bool read_aux_input(uint8_t index)
+{
+    if(index >= COIL_AUXIN_COUNT)
+        return false;
 
-//inputs start at coil 10
+    return ioport_wait_on_input(true, index, WaitMode_Immediate, 0.0f);
+}
 
-//outputs start at coil 20
+static bool write_aux_output(uint8_t index, bool value){
+    if(index >= COIL_AUXIN_COUNT)
+        return false;
+    
+    return ioport_digital_out(index, value);
+}
 
-//RGB coils start at coil 30
+static void update_rgb_output(void *data){
 
+    bool success = false;
+#ifdef NEOPIXELS_PIN
+    rgb_ptr_t *strip = &hal.rgb0;
 
-#define MACRO_TRIGGER_REGISTER 1   // choose any free holding register
+    bool r = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_RED);
+    bool g = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_GREEN);
+    bool b = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_BLUE);
 
-//
+    rgb_color_t color = {
+        .R = r ? 255 : 0,
+        .G = g ? 255 : 0,
+        .B = b ? 255 : 0,
+        .W = 255
+    };
 
+    for(uint16_t device = 0; device < strip->num_devices; device++)
+        strip->out(device, color);
+
+    if(strip->num_devices > 1 && strip->write)
+        strip->write();
+
+#endif
+    return;
+}
+
+static bool read_system_coil(uint8_t index)
+{
+    switch(index) {
+        case SYS_COIL_ALARM:      return state_get() == STATE_ALARM;
+        case SYS_COIL_IDLE:       return state_get() == STATE_IDLE;
+        case SYS_COIL_CYCLE:      return state_get() == STATE_CYCLE;
+        case SYS_COIL_HOLD:       return state_get() == STATE_HOLD;
+        case SYS_COIL_JOG:        return state_get() == STATE_JOG;
+        default:                  return false;
+    }
+}
 
 static volatile bool macro_pending = false;
+static volatile bool rgb_pending = false;
 static volatile uint16_t macro_number = 0;
 
 static const setting_detail_t nmbs_settings[] = {
      { Setting_UserDefined_0, Group_UserSettings, "NanoModbus Device Address", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
-     { Setting_UserDefined_1, Group_UserSettings, "NanoModbus Baud Rate", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
+     { Setting_UserDefined_1, Group_UserSettings, "NanoModbus Baud Rate", "", Format_Integer, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
 };
 
 static const setting_descr_t nmbs_settings_descr[] = {
-    { Setting_UserDefined_0, "NanoModbus Device Address" },
-    { Setting_UserDefined_1, "NanoModbus Baud Rate" },
+    { Setting_UserDefined_0, "NanoModbus Device Address.  Hard reset required." },
+    { Setting_UserDefined_1, "NanoModbus Baud Rate. Hard reset required." },
 };
 
 static void nmbs_settings_save (void)
@@ -114,60 +168,133 @@ static void nmbs_settings_load (void)
         nmbs_settings_restore();
 }
 
-// A single nmbs_bitfield variable can keep 2000 coils
-nmbs_bitfield server_coils = {0};
-uint16_t server_registers[REGS_ADDR_MAX + 1] = {0};
-
-nmbs_platform_conf platform_conf;
-nmbs_callbacks callbacks;
-
-nmbs_t nmbs;
-
 void onError() {
-    // output message on error
-    
-    
-    while (false) {
-        //digitalWrite(LED_BUILTIN, HIGH);
-    }
+    report_message("Nanomodbus Error", Message_Error);
+
+    //raise alarm state?
+
 }
 
 
-nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield coils_out, uint8_t unit_id, void* arg) {
+nmbs_error handle_read_coils(uint16_t address,
+                             uint16_t quantity,
+                             nmbs_bitfield coils_out,
+                             uint8_t unit_id,
+                             void* arg)
+{
+    /* Validate address range */
     if (address + quantity > COILS_ADDR_MAX + 1)
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
 
-    // Read our coils values into coils_out
-    for (int i = 0; i < quantity; i++) {
-        bool value = nmbs_bitfield_read(server_coils, address + i);
+    for (uint16_t i = 0; i < quantity; i++) {
+
+        uint16_t coil = address + i;
+        bool value = false;
+
+           //System Coils (Read-Only)
+        if (coil >= COIL_SYS_BASE &&
+            coil < (COIL_SYS_BASE + COIL_SYS_COUNT)) {
+
+            uint8_t index = coil - COIL_SYS_BASE;
+            value = read_system_coil(index);
+        }
+
+           //AUX Input Coils (Read-Only)
+        else if (coil >= COIL_AUXIN_BASE &&
+                 coil < (COIL_AUXIN_BASE + COIL_AUXIN_COUNT)) {
+
+            uint8_t index = coil - COIL_AUXIN_BASE;
+            value = read_aux_input(index);
+        } 
+
+           //Everything Else(Writable / Stored Coils)
+        else {
+            value = nmbs_bitfield_read(server_coils, coil);
+        }
+
+        /* Write result into outgoing bitfield */
         nmbs_bitfield_write(coils_out, i, value);
     }
 
     return NMBS_ERROR_NONE;
 }
 
-nmbs_error handle_write_single_coil(uint16_t address, bool value, uint8_t unit_id,
-                                       void* arg) {
-    if (address > COILS_ADDR_MAX)
+nmbs_error handle_write_multiple_coils(uint16_t address, uint16_t quantity, const nmbs_bitfield coils, uint8_t unit_id,
+                                       void* arg)
+{
+    /* Validate address range safely */
+    if (quantity == 0 ||
+        address > COILS_ADDR_MAX ||
+        (address + quantity - 1) > COILS_ADDR_MAX)
+    {
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+    }
 
-     // Write the single coil value
-        nmbs_bitfield_write(server_coils, address, value);
+    for (uint16_t i = 0; i < quantity; i++) {
+
+        uint16_t coil = address + i;
+        bool value = nmbs_bitfield_read(coils, i);
+
+           //System Coils (Read-Only)
+        if (coil >= COIL_SYS_BASE &&
+            coil < (COIL_SYS_BASE + COIL_SYS_COUNT))
+        {
+            return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+        }
+
+           //AUX Input Coils (Read-Only)
+        else if (coil >= COIL_AUXIN_BASE &&
+                 coil < (COIL_AUXIN_BASE + COIL_AUXIN_COUNT))
+        {
+            return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+        }
+
+           //AUX Output Coils (Writable)
+        else if (coil >= COIL_AUXOUT_BASE &&
+                 coil < (COIL_AUXOUT_BASE + COIL_AUXOUT_COUNT))
+        {
+            uint8_t index = coil - COIL_AUXOUT_BASE;
+            write_aux_output(index, value);
+
+            /* Mirror into bitfield for readback */
+            nmbs_bitfield_write(server_coils, coil, value);
+        }
+           //RGB Coils (Writable)
+        else if (coil >= COIL_RGB_BASE &&
+                 coil < (COIL_RGB_BASE + COIL_RGB_COUNT))
+        {
+            uint8_t index = coil - COIL_RGB_BASE;
+            nmbs_bitfield_write(server_coils, coil, value);
+            rgb_pending = true;
+        }
+            //system unlock coil
+        else if (coil == COIL_SYSTEM_UNLOCK)
+        {
+            execute_system_unlock();
+            nmbs_bitfield_write(server_coils, coil, value);
+        }        
+        //system reset coil
+        else if (coil == COIL_SYSTEM_RESET)
+        {
+            execute_system_reset();
+            nmbs_bitfield_write(server_coils, coil, value);
+        }
+           //Generic Stored Coils
+        else
+        {
+            nmbs_bitfield_write(server_coils, coil, value);
+        }
+    }
 
     return NMBS_ERROR_NONE;
 }
 
-nmbs_error handle_write_multiple_coils(uint16_t address, uint16_t quantity, const nmbs_bitfield coils, uint8_t unit_id,
-                                       void* arg) {
-    if (address + quantity > COILS_ADDR_MAX + 1)
-        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
-
-    // Write coils values to our server_coils
-    for (int i = 0; i < quantity; i++) {
-        nmbs_bitfield_write(server_coils, address + i, nmbs_bitfield_read(coils, i));
-    }
-
-    return NMBS_ERROR_NONE;
+nmbs_error handle_write_single_coil(uint16_t address, bool value, uint8_t unit_id, void* arg)
+{
+    nmbs_bitfield bf = {0};
+    if (value)
+        bf[0] = 0x01;  // set bit 0
+    return handle_write_multiple_coils(address, 1, bf, unit_id, arg);
 }
 
 
@@ -177,31 +304,20 @@ nmbs_error handle_read_holding_registers(uint16_t address, uint16_t quantity, ui
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
 
     // Read our registers values into registers_out
-    for (int i = 0; i < quantity; i++)
-        registers_out[i] = server_registers[address + i];
-
-    return NMBS_ERROR_NONE;
-}
-
-nmbs_error handle_write_single_register(uint16_t address, uint16_t value,
-                                           uint8_t unit_id, void* arg) {
-    // Validate address range
-    if (address > REGS_ADDR_MAX)
-        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
-
-    // Write the register
-    server_registers[address] = value;
-
-    // Check for macro trigger register
-    if (address == MACRO_TRIGGER_REGISTER) {
-        macro_number = value;
-        macro_pending = true;
+    for (int i = 0; i < quantity; i++){
+        uint16_t reg = address + i;  
+        
+        if (reg == REG_STATE_WORD) { //read machine state
+            registers_out[i] = state_get();
+        } else{
+            registers_out[i] = server_registers[address + i];
+        }
     }
 
     return NMBS_ERROR_NONE;
 }
 
-
+/*
 nmbs_error handle_write_multiple_registers(uint16_t address, uint16_t quantity, const uint16_t* registers,
                                            uint8_t unit_id, void* arg) {
     if (address + quantity > REGS_ADDR_MAX + 1)
@@ -219,32 +335,60 @@ for (int i = 0; i < quantity; i++) {
 
     return NMBS_ERROR_NONE;
 }
+    */
 
-/* size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
+nmbs_error handle_write_multiple_registers(uint16_t address, uint16_t quantity, const uint16_t* registers, uint8_t unit_id, void* arg)
 {
-    if (!stream || !nanomodbus_stream.read || !buf || count == 0)
-        return 0;
-
-    size_t read_count = 0;
-    uint32_t start = hal.get_elapsed_ticks();
-
-    while (read_count < count) {
-
-        int16_t c = nanomodbus_stream.read();
-
-        // Stop immediately if no byte is available
-        if (c < 0)
-            break;
-
-        buf[read_count++] = (uint8_t)c;
-
-        // Optional timeout guard (usually not needed for non-blocking mode)
-        if (timeout_ms && (hal.get_elapsed_ticks() - start) >= timeout_ms)
-            break;
+    /* Validate address range safely */
+    if (quantity == 0 ||
+        address > REGS_ADDR_MAX ||
+        (address + quantity - 1) > REGS_ADDR_MAX)
+    {
+        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
     }
 
-    return read_count;
-} */
+    for (uint16_t i = 0; i < quantity; i++) {
+
+        uint16_t reg = address + i;
+        uint16_t value = registers[i];
+
+        /* -----------------------------
+           Macro Trigger Register
+           ----------------------------- */
+        if (reg == REG_MACRO_TRIGGER) {
+
+            macro_number = value;
+            macro_pending = true;
+
+            /* Optional: mirror into register table */
+            server_registers[reg] = value;
+        }
+
+        /* -----------------------------
+           Read-Only Registers
+           ----------------------------- */
+        else if (reg == REG_STATE_WORD) {
+
+            /* Status word is read-only */
+            return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+        }
+
+        /* -----------------------------
+           Generic Writable Registers
+           ----------------------------- */
+        else {
+
+            server_registers[reg] = value;
+        }
+    }
+
+    return NMBS_ERROR_NONE;
+}    
+
+nmbs_error handle_write_single_register(uint16_t address, uint16_t value, uint8_t unit_id, void* arg) {
+
+    return handle_write_multiple_registers(address, 1, &value, unit_id, arg);
+}
 
 size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
 {
@@ -315,6 +459,18 @@ static void check_macro_execute(uint_fast16_t state)
     stream_file(state, fname);
 }
 
+static void check_update_rgb(uint_fast16_t state)
+{
+    if (!rgb_pending)
+        return;
+
+    rgb_pending = false;
+
+    report_message("Update RGB lights", Message_Plain);
+    
+    task_add_immediate(update_rgb_output, NULL);
+}
+
 static void onExecuteRealtime (uint_fast16_t state)
 {
 
@@ -348,13 +504,13 @@ void my_plugin_init (void)
     callbacks.write_multiple_registers = handle_write_multiple_registers;
   
 
-    nmbs_server_create(&nmbs, RTU_SERVER_ADDRESS, &platform_conf, &callbacks);
+    nmbs_server_create(&nmbs, nmbs_config.modbus_address, &platform_conf, &callbacks);
 
     nmbs_set_read_timeout(&nmbs, 1000);
     nmbs_set_byte_timeout(&nmbs, 100);
   
     bool ok;
-    stream = stream_open_instance(NANOMODBUS_STREAM, 115200, NULL, "NanoMODBUS UART");
+    stream = stream_open_instance(NANOMODBUS_STREAM, nmbs_config.modbus_baud_rate, NULL, "NanoMODBUS UART");
 
     if(stream)
         report_message("NanoModbus stream opened", Message_Plain);
@@ -364,7 +520,7 @@ void my_plugin_init (void)
     if((ok = stream != NULL)) {
         memcpy(&nanomodbus_stream, stream, sizeof(io_stream_t));
 
-        stream = stream_null_init(115200);
+        stream = stream_null_init(nmbs_config.modbus_baud_rate);
 
         nanomodbus_stream.set_enqueue_rt_handler(stream_buffer_all);
     }
