@@ -26,20 +26,24 @@
 #include <string.h>
 
 //#include "serial.h"
-#include "../grbl/modbus.h"
-#include "../grbl/settings.h"
-#include "../grbl/protocol.h"
-#include "../sdcard/fs_stream.h"
+#include "grbl/modbus.h"
+#include "grbl/settings.h"
+#include "grbl/protocol.h"
+#include "sdcard/fs_stream.h"
+#include "grbl/nvs_buffer.h"
 
+typedef struct {
+    uint8_t modbus_address;
+    uint16_t modbus_baud_rate; //added by empyrean 2025-11-24
+    //uint16_t rx_timeout;
+} nmbs_settings_t;
+
+nmbs_settings_t nmbs_config;
+static nvs_address_t nvs_address;
 
 static on_report_options_ptr on_report_options;
 
 static on_execute_realtime_ptr on_execute_realtime = NULL, on_execute_delay;
-
-typedef struct {
-    uint32_t baud_rate;
-    uint32_t rx_timeout;
-} rtu_settings_t;
 
 static const uint32_t baud[] = { 2400, 4800, 9600, 19200, 38400, 115200 };
 static const modbus_silence_timeout_t dflt_timeout =
@@ -57,17 +61,55 @@ static io_stream_t nanomodbus_stream;
 static uint8_t dir_port = IOPORT_UNASSIGNED;
 
 // The data model of this sever will support coils addresses 0 to 100 and registers addresses from 0 to 32
+// Our RTU address
+#define RTU_SERVER_ADDRESS 1
+
 #define COILS_ADDR_MAX 100
 #define REGS_ADDR_MAX 32
 
+#define ALARM_STATE_COIL 0
+#define IDLE_STATE_COIL 1
+
+//inputs start at coil 10
+
+//outputs start at coil 20
+
+
 #define MACRO_TRIGGER_REGISTER 1   // choose any free holding register
+
+//
 
 
 static volatile bool macro_pending = false;
 static volatile uint16_t macro_number = 0;
 
-// Our RTU address
-#define RTU_SERVER_ADDRESS 1
+static const setting_detail_t mbrgb_settings[] = {
+     { Setting_Action1, Group_ModBus, "NanoModbus Device Address", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_address, NULL, NULL },
+     { Setting_Action2, Group_ModBus, "NanoModbus Baud Rate", "", Format_Int16, "###0", "1", "250", Setting_NonCore, &nmbs_config.modbus_baud_rate, NULL, NULL },
+};
+
+static const setting_descr_t mbrgb_settings_descr[] = {
+    { Setting_Action1, "NanoModbus Device Address" },
+    { Setting_Action2, "NanoModbus Baud Rate" },
+};
+
+static void nmbs_settings_save (void)
+{
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
+}
+
+static void nmbs_settings_restore (void)
+{
+    nmbs_config.modbus_address = 1;
+    nmbs_config.modbus_baud_rate = 115200;
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&nmbs_config, sizeof(nmbs_settings_t), true);
+}
+
+static void nmbs_settings_load (void)
+{
+    if((hal.nvs.memcpy_from_nvs((uint8_t *)&nmbs_config, nvs_address, sizeof(nmbs_settings_t), true) != NVS_TransferResult_OK))
+        nmbs_settings_restore();
+}
 
 // A single nmbs_bitfield variable can keep 2000 coils
 nmbs_bitfield server_coils = {0};
@@ -310,6 +352,23 @@ void my_plugin_init (void)
         ioport_set_function(dir_pin, Output_RS485_Direction, NULL);
         ioport_digital_out(dir_port, 0);
     }
+
+    static setting_details_t nmbs_setting_details = {
+        .settings = mbrgb_settings,
+        .n_settings = sizeof(mbrgb_settings) / sizeof(setting_detail_t),
+    #ifndef NO_SETTINGS_DESCRIPTIONS
+        .descriptions = mbrgb_settings_descr,
+        .n_descriptions = sizeof(mbrgb_settings_descr) / sizeof(setting_descr_t),
+    #endif
+        .load = nmbs_settings_load,
+        .restore = nmbs_settings_restore,
+        .save = nmbs_settings_save
+    };
+
+        if(modbus_enabled() && (nvs_address = nvs_alloc(sizeof(nmbs_settings_t)))) 
+    {
+        settings_register(&nmbs_setting_details);
+    };    
 
     on_report_options = grbl.on_report_options;
     grbl.on_report_options = onReportOptions;
