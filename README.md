@@ -6,6 +6,29 @@ Will execute the file "42.gcode" that is stored in the filesystem.
 
 Also has inputs and outputs mapped to single coils to provide support for Modbus RGB and other applications.
 
+/* ============================================================
+   MODBUS COIL MEMORY MAP
+   ============================================================
+
+   0–9     : System status coils (read-only)
+   10–19   : AUX inputs (read-only)
+   20–29   : AUX outputs (write)
+   30–33   : RGB outputs (write)
+   
+   Special coils:
+   99 - execute a system reset
+
+   /* ============================================================
+   Register Layout (optional expansion)
+   ============================================================ */
+
+#define REG_MACRO_TRIGGER      1
+#define REG_STATE_WORD         10
+#define REG_FEED_RATE          11 //currently unhandled
+#define REG_COOLANT_RATE       12 //currently unhandleed
+
+
+
 # nanoMODBUS - A compact MODBUS RTU/TCP C library for embedded/microcontrollers
 
 **If you found this library useful, buy me a coffee on**
