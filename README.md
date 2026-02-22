@@ -1,10 +1,10 @@
-nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 1 and executes a macro stored in the filesystem with that number, ie 
-
+nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 1 and executes a macro stored in the filesystem with that number.  For example: 
+```
 G65 P7 S1 F16 R1 A42
-
+```
 Will execute the file "42.gcode" that is stored in the filesystem.
 
-More to come, but basic proof of concept.
+Also has inputs and outputs mapped to single coils to provide support for Modbus RGB and other applications.
 
 # nanoMODBUS - A compact MODBUS RTU/TCP C library for embedded/microcontrollers
 
