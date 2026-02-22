@@ -15,7 +15,7 @@ Also has inputs and outputs mapped to single coils to provide support for Modbus
    0–9     : System status coils (read-only)
    10–19   : AUX inputs (read-only)
    20–29   : AUX outputs (write)
-   30–33   : RGB outputs (write)
+   30–33   : RGB outputs (write) that are applied to the Neopixel output.
    
    Special coils:
    99 - execute a system reset
