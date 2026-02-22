@@ -4,11 +4,13 @@ G65 P7 S1 F16 R1 A42
 ```
 Will execute the file "42.gcode" that is stored in the filesystem.
 
+Up to 65 thousand macros can currently be stored, and each macro has full GRBLHAL support for expressions and flow control.
+
 Also has inputs and outputs mapped to single coils to provide support for Modbus RGB and other applications.
 
-/* ============================================================
-   MODBUS COIL MEMORY MAP
-   ============================================================
+```
+   **MODBUS COIL MEMORY MAP**
+
 
    0–9     : System status coils (read-only)
    10–19   : AUX inputs (read-only)
@@ -18,15 +20,14 @@ Also has inputs and outputs mapped to single coils to provide support for Modbus
    Special coils:
    99 - execute a system reset
 
-   /* ============================================================
-   Register Layout (optional expansion)
-   ============================================================ */
+
+   **Register Layout (optional expansion)**
 
 #define REG_MACRO_TRIGGER      1
 #define REG_STATE_WORD         10
 #define REG_FEED_RATE          11 //currently unhandled
 #define REG_COOLANT_RATE       12 //currently unhandleed
-
+```
 
 
 # nanoMODBUS - A compact MODBUS RTU/TCP C library for embedded/microcontrollers
