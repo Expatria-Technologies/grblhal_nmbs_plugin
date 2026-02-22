@@ -19,6 +19,8 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#define NMBS_DEBUG 1
+
 #include "driver.h"
 #include "nanomodbus.h"
 
@@ -88,15 +90,30 @@ static void execute_system_unlock (void){
 
 static bool read_aux_input(uint8_t index)
 {
+    bool ret;
     if(index >= COIL_AUXIN_COUNT)
         return false;
 
-    return ioport_wait_on_input(true, index, WaitMode_Immediate, 0.0f);
+    int value  = ioport_wait_on_input(true, index, WaitMode_Immediate, 0.0f);
+    if (value == 1)
+        ret = true;
+    else
+        ret = false;
+
+    char dbg[32];
+    snprintf(dbg, sizeof(dbg), "value=%d at port=%d", (int)value, index);
+    report_message(dbg, Message_Plain);      
+
+    return ret;
 }
 
 static bool write_aux_output(uint8_t index, bool value){
     if(index >= COIL_AUXIN_COUNT)
         return false;
+
+    char dbg[32];
+    snprintf(dbg, sizeof(dbg), "AUXOUT value=%d at port=%d", (int)value, index);
+    report_message(dbg, Message_Plain);              
     
     return ioport_digital_out(index, value);
 }
@@ -163,12 +180,71 @@ void onError() {
 }
 
 
-nmbs_error handle_read_coils(uint16_t address,
-                             uint16_t quantity,
-                             nmbs_bitfield coils_out,
-                             uint8_t unit_id,
-                             void* arg)
+nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield coils_out, uint8_t unit_id, void* arg)
 {
+    
+    char fname[32];
+    snprintf(fname, sizeof(fname), "%d %d", address, quantity);
+
+    report_message("Read Coils", Message_Plain);
+    report_message(fname, Message_Plain);
+
+    /* Validate address range */
+    if (address + quantity > COILS_ADDR_MAX + 1)
+        return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
+
+    for (uint16_t i = 0; i < quantity; i++) {
+
+        uint16_t coil = address + i;
+        bool value = false;
+
+           //System Coils (Read-Only)
+        if (coil >= COIL_SYS_BASE &&
+            coil < (COIL_SYS_BASE + COIL_SYS_COUNT)) {
+
+            uint8_t index = coil - COIL_SYS_BASE;
+            value = read_system_coil(index);
+        }
+
+           //AUX Input Coils (Read-Only)
+        else if (coil >= COIL_AUXIN_BASE &&
+                 coil < (COIL_AUXIN_BASE + COIL_AUXIN_COUNT)) {
+
+            uint8_t index = coil - COIL_AUXIN_BASE;
+            value = read_aux_input(index);
+            char dbg[32];
+            snprintf(dbg, sizeof(dbg), "value=%d at i=%d", (int)value, coil);
+            report_message(dbg, Message_Plain);            
+        } 
+
+           //Everything Else(Writable / Stored Coils)
+        else {
+            value = nmbs_bitfield_read(server_coils, coil);
+        }
+
+        /* Write result into outgoing bitfield */
+        nmbs_bitfield_write(coils_out, i, value);
+    }
+
+    char dbg[32];
+    snprintf(dbg, sizeof(dbg), "coil10=%d out[0]=%02X", 
+    (int)nmbs_bitfield_read(server_coils, 10),
+    coils_out[0]);
+
+    report_message(dbg, Message_Plain);    
+
+
+    report_message("Done Coils", Message_Plain);
+    return NMBS_ERROR_NONE;
+}
+
+nmbs_error handle_read_discrete_inputs (uint16_t address, uint16_t quantity, nmbs_bitfield inputs_out, uint8_t unit_id, void* arg){
+    char fname[32];
+    snprintf(fname, sizeof(fname), "%d %d", address, quantity);
+
+    report_message("Read Inputs", Message_Plain);
+    report_message(fname, Message_Plain);    
+    
     /* Validate address range */
     if (address + quantity > COILS_ADDR_MAX + 1)
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
@@ -200,7 +276,7 @@ nmbs_error handle_read_coils(uint16_t address,
         }
 
         /* Write result into outgoing bitfield */
-        nmbs_bitfield_write(coils_out, i, value);
+        nmbs_bitfield_write(inputs_out, i, value);
     }
 
     return NMBS_ERROR_NONE;
@@ -278,6 +354,8 @@ nmbs_error handle_write_multiple_coils(uint16_t address, uint16_t quantity, cons
 
 nmbs_error handle_write_single_coil(uint16_t address, bool value, uint8_t unit_id, void* arg)
 {
+    report_message("write single coil", Message_Plain);    
+    
     nmbs_bitfield bf = {0};
     if (value)
         bf[0] = 0x01;  // set bit 0
@@ -290,12 +368,21 @@ nmbs_error handle_read_holding_registers(uint16_t address, uint16_t quantity, ui
     if (address + quantity > REGS_ADDR_MAX + 1)
         return NMBS_EXCEPTION_ILLEGAL_DATA_ADDRESS;
 
+    char fname[32];
+    snprintf(fname, sizeof(fname), "%d %d", address, quantity);
+
+    report_message("Read holding regs", Message_Plain);
+    report_message(fname, Message_Plain);        
+
     // Read our registers values into registers_out
     for (int i = 0; i < quantity; i++){
         uint16_t reg = address + i;  
         
         if (reg == REG_STATE_WORD) { //read machine state
             registers_out[i] = state_get();
+            char dbg[32];
+            snprintf(dbg, sizeof(dbg), "state=%d at reg=%d", (int)registers_out[i], reg);
+            report_message(dbg, Message_Plain);                  
         } else{
             registers_out[i] = server_registers[address + i];
         }
@@ -377,17 +464,41 @@ nmbs_error handle_write_single_register(uint16_t address, uint16_t value, uint8_
     return handle_write_multiple_registers(address, 1, &value, unit_id, arg);
 }
 
-size_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
+/**
+ * nanoMODBUS platform configuration struct.
+ * Passed to nmbs_server_create() and nmbs_client_create().
+ *
+ * read() and write() are the platform-specific methods that read/write data to/from a serial port or a TCP connection.
+ *
+ * Both methods should block until either:
+ * - `count` bytes of data are read/written
+ * - the byte timeout, with `byte_timeout_ms >= 0`, expires
+ *
+ * A value `< 0` for `byte_timeout_ms` means infinite timeout.
+ * With a value `== 0` for `byte_timeout_ms`, the method should read/write once in a non-blocking fashion and return immediately.
+ *
+ *
+ * Their return value should be the number of bytes actually read/written, or `< 0` in case of error.
+ * A return value between `0` and `count - 1` will be treated as if a timeout occurred on the transport side. All other
+ * values will be treated as transport errors.
+ *
+ * Additionally, an optional crc_calc() function can be defined to override the default nanoMODBUS CRC calculation function.
+ *
+ * These methods accept a pointer to arbitrary user-data, which is the arg member of this struct.
+ * After the creation of an instance it can be changed with nmbs_set_platform_arg().
+ */
+
+int32_t stream_read_bytes(uint8_t *buf, size_t count, uint32_t timeout_ms)
 {
     if (!stream || !nanomodbus_stream.read || !buf || count == 0)
         return 0;
 
-    size_t read_count = 0;
+    int32_t read_count = 0;
     uint32_t start = hal.get_elapsed_ticks();
 
     while (read_count < count) {
 
-        int16_t c = nanomodbus_stream.read();
+        int32_t c = nanomodbus_stream.read();
 
         // Stop immediately if no byte is available
         if (c < 0)
@@ -410,12 +521,23 @@ int32_t read_serial(uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void*
 
 
 int32_t write_serial(const uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void* arg) {
+
+    char dbg[32];
+    snprintf(dbg, sizeof(dbg), "WS: count=%d byte_timeout_ms=%d", count, byte_timeout_ms);
+    report_message(dbg, Message_Plain);
+    snprintf(dbg, sizeof(dbg), "WS: %02X %02X %02X %02X %02X %02X",
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+    report_message(dbg, Message_Plain);         
+    
     ioport_digital_out(dir_port, 1);
     hal.delay_ms(1,NULL);
     nanomodbus_stream.write_n(buf, count);
     while(nanomodbus_stream.get_tx_buffer_count());
-    //hal.delay_ms(10,NULL);
+    hal.delay_ms(5,NULL);
     ioport_digital_out(dir_port, 0);
+
+    nanomodbus_stream.reset_read_buffer();
+    nanomodbus_stream.cancel_read_buffer();
 
     return count;
 }
@@ -501,6 +623,7 @@ static void nmbs_settings_load (void)
 
     nmbs_callbacks_create(&callbacks);
     callbacks.read_coils = handle_read_coils;
+    callbacks.read_discrete_inputs = handle_read_discrete_inputs;
     callbacks.write_single_coil = handle_write_single_coil;
     callbacks.write_multiple_coils = handle_write_multiple_coils;
     callbacks.read_holding_registers = handle_read_holding_registers;

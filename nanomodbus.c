@@ -25,20 +25,25 @@
 */
 
 #include "nanomodbus.h"
+#include "driver.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
+#include <stdio.h>
+
 #define NMBS_UNUSED_PARAM(x) ((x) = (x))
 
 #ifdef NMBS_DEBUG
-#include <stdio.h>
-#define NMBS_DEBUG_PRINT(...) printf(__VA_ARGS__)
+#define NMBS_DEBUG_PRINT(...) do { \
+    char _dbg[64]; \
+    snprintf(_dbg, sizeof(_dbg), __VA_ARGS__); \
+    report_message(_dbg, Message_Debug); \
+} while(0)
 #else
 #define NMBS_DEBUG_PRINT(...) (void) (0)
 #endif
-
 
 static uint8_t get_1(nmbs_t* nmbs) {
     uint8_t result = nmbs->msg.buf[nmbs->msg.buf_idx];
@@ -414,7 +419,7 @@ static void set_msg_header_size(nmbs_t* nmbs, uint16_t data_length) {
 
 
 static nmbs_error send_msg(nmbs_t* nmbs) {
-    NMBS_DEBUG_PRINT("\n");
+    NMBS_DEBUG_PRINT("send_msg\n");
 
     if (nmbs->platform.transport == NMBS_TRANSPORT_RTU) {
         const uint16_t crc = nmbs->platform.crc_calc(nmbs->msg.buf, nmbs->msg.buf_idx, nmbs->platform.arg);
