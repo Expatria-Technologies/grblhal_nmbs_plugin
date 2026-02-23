@@ -122,7 +122,7 @@ static void update_rgb_output(void *data){
 
     bool success = false;
 #ifdef NEOPIXELS_PIN
-/*
+
     rgb_ptr_t *strip = &hal.rgb0;
 
     bool r = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_RED);
@@ -133,15 +133,16 @@ static void update_rgb_output(void *data){
         .R = r ? 255 : 0,
         .G = g ? 255 : 0,
         .B = b ? 255 : 0,
-        .W = 255
     };
 
     for(uint16_t device = 0; device < strip->num_devices; device++)
         strip->out(device, color);
+    
+    strip->set_intensity(25);
 
-    if(strip->num_devices > 1 && strip->write)
+    if(strip->write)
         strip->write();
-*/
+
 #endif
     return;
 }
@@ -585,6 +586,7 @@ static void onExecuteRealtime (uint_fast16_t state)
 
     nmbs_server_poll(&nmbs);
     check_macro_execute(state);
+    check_update_rgb(state);
     on_execute_realtime(state);
 }
 
@@ -593,6 +595,7 @@ static void onExecuteDelay (uint_fast16_t state)
 
     nmbs_server_poll(&nmbs);
     check_macro_execute(state);
+    check_update_rgb(state);
     on_execute_delay(state);
 }
 
