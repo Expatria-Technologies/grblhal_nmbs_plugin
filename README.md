@@ -1,12 +1,38 @@
-nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 1 and executes a macro stored in the filesystem with that number, ie 
-
+nanoMODBUS RTU server for GRBLHAL.  Currently just responds when you write a number to register 1 and executes a macro stored in the filesystem with that number.  For example: 
+```
 G65 P7 S1 F16 R1 A42
-
+```
 Will execute the file "42.gcode" that is stored in the filesystem.
 
-More to come, but basic proof of concept.
+Up to 65 thousand macros can currently be stored, and each macro has full GRBLHAL support for expressions and flow control.
+
+Also has inputs and outputs mapped to single coils to provide support for Modbus RGB and other applications.
+
+```
+   **MODBUS COIL MEMORY MAP**
+
+
+   0–9     : System status coils (read-only)
+   10–19   : AUX inputs (read-only)
+   20–29   : AUX outputs (write)
+   30–33   : RGB outputs (write) that are applied to the Neopixel output.
+   
+   Special coils:
+   99 - execute a system reset
+
+
+   **Register Layout (optional expansion)**
+
+#define REG_MACRO_TRIGGER      1
+#define REG_STATE_WORD         10
+#define REG_FEED_RATE          11 //currently unhandled
+#define REG_COOLANT_RATE       12 //currently unhandleed
+```
+
 
 # nanoMODBUS - A compact MODBUS RTU/TCP C library for embedded/microcontrollers
+
+Note that the ko-fi link below is for the nanoModbus author, not Expatria.
 
 **If you found this library useful, buy me a coffee on**
 [<img src='https://storage.ko-fi.com/cdn/brandasset/logo_white_stroke.png' width='80'>](https://ko-fi.com/B0B2LK779)
