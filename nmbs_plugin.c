@@ -19,7 +19,7 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#define NMBS_DEBUG 1
+#define NMBS_DEBUG 0
 
 #include "driver.h"
 #include "nanomodbus.h"
@@ -130,19 +130,40 @@ static void update_rgb_output(void *data){
     bool b = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_BLUE);
 
     rgb_color_t color = {
-        .R = r ? 255 : 0,
-        .G = g ? 255 : 0,
-        .B = b ? 255 : 0,
+        .R = 255,
+        .G = 255,
+        .B = 215,
     };
 
     for(uint16_t device = 0; device < strip->num_devices; device++)
         strip->out(device, color);
     
-    strip->set_intensity(25);
+    strip->set_intensity(255);
 
     if(strip->write)
         strip->write();
 
+#endif
+
+#ifdef NEOPIXELS1_PIN
+    rgb_ptr_t *strip1 = &hal.rgb1;
+
+    r = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_RED);
+    g = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_GREEN);
+    b = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_BLUE);
+
+    color.R = r ? 255 : 0;
+    color.G = g ? 255 : 0;
+    color.B = b ? 215 : 0;
+
+
+    for(uint16_t device = 0; device < strip1->num_devices; device++)
+        strip1->out(device, color);
+    
+    strip1->set_intensity(255);
+
+    if(strip1->write)
+        strip1->write();
 #endif
     return;
 }
@@ -227,6 +248,7 @@ nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield 
         nmbs_bitfield_write(coils_out, i, value);
     }
 
+    #if 0
     char dbg[32];
     snprintf(dbg, sizeof(dbg), "coil10=%d out[0]=%02X", 
     (int)nmbs_bitfield_read(server_coils, 10),
@@ -236,6 +258,7 @@ nmbs_error handle_read_coils(uint16_t address, uint16_t quantity, nmbs_bitfield 
 
 
     report_message("Done Coils", Message_Plain);
+    #endif
     return NMBS_ERROR_NONE;
 }
 
@@ -523,12 +546,14 @@ int32_t read_serial(uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void*
 
 int32_t write_serial(const uint8_t* buf, uint16_t count, int32_t byte_timeout_ms, void* arg) {
 
+    #if 0
     char dbg[32];
     snprintf(dbg, sizeof(dbg), "WS: count=%d byte_timeout_ms=%d", count, byte_timeout_ms);
     report_message(dbg, Message_Plain);
     snprintf(dbg, sizeof(dbg), "WS: %02X %02X %02X %02X %02X %02X",
         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
-    report_message(dbg, Message_Plain);         
+    report_message(dbg, Message_Plain);
+    #endif        
     
     ioport_digital_out(dir_port, 1);
     hal.delay_ms(1,NULL);
@@ -571,13 +596,22 @@ static void check_macro_execute(uint_fast16_t state)
 
 static void check_update_rgb(uint_fast16_t state)
 {
-    if (!rgb_pending)
+    static uint32_t last_ms;
+    uint32_t ms = hal.get_elapsed_ticks();
+    
+    if (rgb_pending){
+        last_ms = ms;
+        task_delete(update_rgb_output, NULL);
+        task_add_immediate(update_rgb_output, NULL);
+        rgb_pending = false;
+        return;
+    }
+
+    if(ms < last_ms + 50)
         return;
 
-    rgb_pending = false;
-
-    report_message("Update RGB lights", Message_Plain);
-    
+    last_ms = ms;
+    task_delete(update_rgb_output, NULL);
     task_add_immediate(update_rgb_output, NULL);
 }
 

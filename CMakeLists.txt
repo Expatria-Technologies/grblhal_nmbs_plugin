@@ -6,5 +6,3 @@ target_sources(nmbs INTERFACE
 )
 
 target_include_directories(nmbs INTERFACE ${CMAKE_CURRENT_LIST_DIR})
-
-add_definitions(-DNMBS_DEBUG)
