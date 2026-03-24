@@ -13,9 +13,40 @@ Also has inputs and outputs mapped to single coils to provide support for Modbus
 
 
    0–9     : System status coils (read-only)
+        SYS_COIL_ALARM = 0,
+        SYS_COIL_IDLE,
+        SYS_COIL_CYCLE,
+        SYS_COIL_HOLD,
+        SYS_COIL_JOG,
+        SYS_COIL_HOMING,
+        SYS_COIL_DOOR,
+        SYS_COIL_CHECK_MODE
+
    10–19   : AUX inputs (read-only)
+        AUXIN0 = 0,
+        AUXIN1,
+        AUXIN2,
+        AUXIN3,
+        AUXIN4,
+        AUXIN5,
+        AUXIN6,
+        AUXIN7,
+        AUXIN8
+
    20–29   : AUX outputs (write)
+        AUXOUT0 = 0,
+        AUXOUT1,
+        AUXOUT2,
+        AUXOUT3,
+        AUXOUT4,
+        AUXOUT5,
+        AUXOUT6,
+        AUXOUT7
+     
    30–33   : RGB outputs (write) that are applied to the Neopixel output.
+        RGB_RED = 0,
+        RGB_GREEN,
+        RGB_BLUE
    
    Special coils:
    99 - execute a system reset
