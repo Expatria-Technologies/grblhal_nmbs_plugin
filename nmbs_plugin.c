@@ -132,8 +132,12 @@ static void update_rgb_output(void *data){
     rgb_color_t color = {
         .R = 255,
         .G = 255,
-        .B = 215,
+        .B = 255,
     };
+
+    color.R = r ? 255 : 0;
+    color.G = g ? 255 : 0;
+    color.B = b ? 215 : 0;    
 
     for(uint16_t device = 0; device < strip->num_devices; device++)
         strip->out(device, color);
@@ -143,27 +147,25 @@ static void update_rgb_output(void *data){
     if(strip->write)
         strip->write();
 
+
 #endif
 
 #ifdef NEOPIXELS1_PIN
     rgb_ptr_t *strip1 = &hal.rgb1;
 
-    r = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_RED);
-    g = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_GREEN);
-    b = nmbs_bitfield_read(server_coils, COIL_RGB_BASE + RGB_BLUE);
-
     color.R = r ? 255 : 0;
     color.G = g ? 255 : 0;
     color.B = b ? 215 : 0;
 
-
+  
     for(uint16_t device = 0; device < strip1->num_devices; device++)
         strip1->out(device, color);
-    
+  
     strip1->set_intensity(255);
 
     if(strip1->write)
         strip1->write();
+        
 #endif
     return;
 }
